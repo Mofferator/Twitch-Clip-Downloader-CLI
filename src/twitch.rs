@@ -1,4 +1,4 @@
-use twitch_api::{helix::{clips::{get_clips, Clip}}, twitch_oauth2::AppAccessToken, HelixClient};
+use twitch_api::{helix::clips::{get_clips, Clip}, twitch_oauth2::AppAccessToken, types::UserId, HelixClient};
 use anyhow::Result;
 
 pub async fn get_token(client_id: &str, client_secret: &str) -> Result<AppAccessToken> {
@@ -11,7 +11,7 @@ pub async fn get_token(client_id: &str, client_secret: &str) -> Result<AppAccess
     )
     .await?)
 }
-pub async fn get_clips(broadcaster_id: &String, token: &AppAccessToken) -> Result<Vec<Clip>> {
+pub async fn get_clips(broadcaster_id: &UserId, token: &AppAccessToken) -> Result<Vec<Clip>> {
     let client: HelixClient<reqwest::Client> = HelixClient::default();
     let mut clips = Vec::new();
     let mut cursor = None;
@@ -31,5 +31,12 @@ pub async fn get_clips(broadcaster_id: &String, token: &AppAccessToken) -> Resul
         
     }
     Ok(clips)
+}
+
+pub async fn get_broadcaster_id(login: &String, token: &AppAccessToken) -> Result<Option<UserId>> {
+    let client: HelixClient<reqwest::Client> = HelixClient::default();
+    let user_option = client.get_user_from_login(login, token).await?;
+
+    Ok(user_option.map(|user| user.id))
 }
 

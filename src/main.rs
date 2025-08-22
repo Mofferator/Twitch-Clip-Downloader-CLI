@@ -1,8 +1,8 @@
 use clap::{arg, command, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use twdl::get_video_source_files;
-use twitch_api::helix::clips::Clip;
-use std::{path::{PathBuf}, process, str::FromStr};
+use twitch_api::{helix::clips::Clip, twitch_oauth2::AppAccessToken, types::UserId};
+use std::{path::PathBuf, process, str::FromStr};
 use regex::Regex;
 use reqwest::Url;
 use tokio::{fs::read, io::AsyncWriteExt};
@@ -27,11 +27,17 @@ enum Commands {
     },
 
     Channel {
+        #[arg(short = 'o', long = "output", default_value_t = String::from("."), help = "Path to directory to store the clips")]
+        output: String,
+
         #[arg(short = 'c', long = "credentials", help = "Path to a json file containing client_id and client_secret")]
         credentials: String,
 
-        #[arg(help = "Path to a json file containing client_id and client_secret")]
-        broadcaster: String,
+        #[arg(short = 'i', long = "broadcaster-id", help = "Numeric broadcaster ID")]
+        broadcaster_id: Option<u32>,
+
+        #[arg(short = 'l', long = "broadcaster-login", help = "Broadcaster login")]
+        broadcaster_name: Option<String>,
     }
 }
 
@@ -86,6 +92,25 @@ fn output_file_or_cwd(output_file: &Option<String>, slug: &String) -> Result<Pat
     }
 }
 
+async fn login_or_id(id: &Option<u32>, login: &Option<String>, token: &AppAccessToken) -> UserId {
+    match (id, login) {
+        (None, None) => {
+            eprintln!("Either broadcaster login or id is required");
+            process::exit(1);
+        }
+        (Some(id), _) => id.to_string().into(),
+        (None, Some(login)) => {
+            match twitch::get_broadcaster_id(login, token).await {
+                Ok(Some(id)) => id,
+                _ => {
+                    eprintln!("Error finding user with that login");
+                    process::exit(1);
+                }
+            }
+        }
+    }
+}
+
 async fn handle_clip_subcommand(output: Option<String>, clip: String) {
     let re = Regex::new(r"(?:https?://(?:www\.)?twitch\.tv/[^/]+/clip/|https?://clips\.twitch\.tv/)?([A-Za-z0-9_-]+)")
         .expect("Failed to parse regex string");
@@ -129,7 +154,7 @@ async fn handle_clip_subcommand(output: Option<String>, clip: String) {
 
 }
 
-async fn download_clip(clip: Clip) {
+async fn download_clip(clip: Clip, directory: &PathBuf) {
     let source_files = match get_video_source_files(&clip.id).await {
         Ok(files) => files,
         Err(_) => {
@@ -145,17 +170,19 @@ async fn download_clip(clip: Clip) {
         }
     };
     let url = best.url.clone();
-    let path = match PathBuf::from_str(&format!("./clips/{}.mp4", &clip.id)) {
+    let path = match PathBuf::from_str(&format!("{}.mp4", &clip.id)) {
         Ok(path) => path,
         Err(err) => {
             eprintln!("Failed to specify path: {err}");
             return;
         }
     };
+    let path = directory.join(path);
     download_file(url.clone(), &path).await;
 }
 
-async fn handle_channel_subcommand(credentials: String, broadcaster: String) -> () {
+async fn handle_channel_subcommand(credentials: String, output: String,
+                                    broadcaster_id: Option<u32>, broadcaster_login: Option<String>) -> () {
     let path = match PathBuf::from_str(&credentials) {
         Ok(path) => path,
         Err(_) => {
@@ -185,7 +212,6 @@ async fn handle_channel_subcommand(credentials: String, broadcaster: String) -> 
             process::exit(1);
         }
     };
-    println!("client id: {}\nclient secret: {}", &creds.client_id, &creds.client_secret);
     let token = match twitch::get_token(&creds.client_id, &creds.client_secret).await {
         Ok(token) => token,
         Err(err) => {
@@ -193,7 +219,15 @@ async fn handle_channel_subcommand(credentials: String, broadcaster: String) -> 
             process::exit(1);
         }
     };
-    let clips = match twitch::get_clips(&broadcaster, &token).await {
+    let id = login_or_id(&broadcaster_id, &broadcaster_login, &token).await;
+    let output_path = match PathBuf::from_str(&output) {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!("Invalid path");
+            process::exit(1);
+        }
+    };
+    let clips = match twitch::get_clips(&id, &token).await {
         Ok(clips) => clips,
         Err(err) => {
             eprintln!("Failed to fetch clips: {err}");
@@ -202,7 +236,7 @@ async fn handle_channel_subcommand(credentials: String, broadcaster: String) -> 
     };
     let mut futures = Vec::new();
     for clip in clips {
-        futures.push(download_clip(clip));
+        futures.push(download_clip(clip, &output_path));
     }
     join_all(futures).await;
 
@@ -215,8 +249,8 @@ async fn main() {
         Commands::Clip { output, clip } => {
             handle_clip_subcommand(output, clip).await
         }
-        Commands::Channel { credentials, broadcaster } => {
-            handle_channel_subcommand(credentials, broadcaster).await
+        Commands::Channel { credentials, output, broadcaster_id, broadcaster_name } => {
+            handle_channel_subcommand(credentials, output, broadcaster_id, broadcaster_name).await
         }
     }
 
