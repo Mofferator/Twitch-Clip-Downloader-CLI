@@ -1,7 +1,9 @@
+#![allow(dead_code)]
 use std::{fmt::Display, str::FromStr};
 
 use anyhow::Result;
 mod video_source_response;
+mod twitch;
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use reqwest::Url;
 use video_source_response::VideoSourceResponse;

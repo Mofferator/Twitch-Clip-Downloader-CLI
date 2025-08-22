@@ -1,11 +1,14 @@
 use clap::{arg, command, Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use twdl::get_video_source_files;
+use twitch_api::helix::clips::Clip;
 use std::{path::{PathBuf}, process, str::FromStr};
 use regex::Regex;
 use reqwest::Url;
-use tokio::io::AsyncWriteExt;
+use tokio::{fs::read, io::AsyncWriteExt};
 use tokio::fs::File;
-use futures_util::StreamExt;
+use futures_util::{future::join_all, StreamExt};
+mod twitch;
 
 #[derive(Parser, Debug)]
 #[command(name = "tw-dl", version, about = "Downloads twitch clips")]
@@ -21,10 +24,18 @@ enum Commands {
         output: Option<String>,
 
         clip: String
+    },
+
+    Channel {
+        #[arg(short = 'c', long = "credentials", help = "Path to a json file containing client_id and client_secret")]
+        credentials: String,
+
+        #[arg(help = "Path to a json file containing client_id and client_secret")]
+        broadcaster: String,
     }
 }
 
-async fn download_file(url: Url, file: PathBuf) {
+async fn download_file(url: Url, file: &PathBuf) {
     let client = reqwest::Client::new();
     let response = match client.get(url).send().await {
         Ok(resp) => resp,
@@ -62,6 +73,11 @@ async fn download_file(url: Url, file: PathBuf) {
     println!("Downloaded file to {}", file.display());
 }
 
+#[derive(Deserialize, Serialize, Debug)]
+struct TwitchCredentials {
+    client_id: String,
+    client_secret: String
+}
 
 fn output_file_or_cwd(output_file: &Option<String>, slug: &String) -> Result<PathBuf, std::convert::Infallible> {
     match output_file {
@@ -109,7 +125,86 @@ async fn handle_clip_subcommand(output: Option<String>, clip: String) {
         }
     };
 
-    download_file(best.url.clone(), path).await;
+    download_file(best.url.clone(), &path).await;
+
+}
+
+async fn download_clip(clip: Clip) {
+    let source_files = match get_video_source_files(&clip.id).await {
+        Ok(files) => files,
+        Err(_) => {
+            eprintln!("Failed to download clip: {}", clip.id);
+            return;
+        }
+    };
+    let best = match source_files.iter().max() {
+        Some(best) => best,
+        None => {
+            eprintln!("Could not find source file for clip: {}", clip.id);
+            return;
+        }
+    };
+    let url = best.url.clone();
+    let path = match PathBuf::from_str(&format!("./clips/{}.mp4", &clip.id)) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("Failed to specify path: {err}");
+            return;
+        }
+    };
+    download_file(url.clone(), &path).await;
+}
+
+async fn handle_channel_subcommand(credentials: String, broadcaster: String) -> () {
+    let path = match PathBuf::from_str(&credentials) {
+        Ok(path) => path,
+        Err(_) => {
+            eprintln!("Invalid credentials path: {credentials}");
+            process::exit(1);
+        }
+    };
+    let contents = match read(path).await {
+        Ok(contents) => {
+            match String::from_utf8(contents) {
+                Ok(str) => str,
+                Err(_) => {
+                    eprintln!("Failed to interpret creds file as text");
+                    process::exit(1);
+                }
+            }
+        }
+        Err(_) => {
+            eprintln!("Failed to read from credentials file");
+            process::exit(1);
+        }
+    };
+    let creds: TwitchCredentials = match serde_json::from_str(&contents) {
+        Ok(creds) => creds,
+        Err(err) => {
+            eprintln!("json file has invalid formatting: {err}");
+            process::exit(1);
+        }
+    };
+    println!("client id: {}\nclient secret: {}", &creds.client_id, &creds.client_secret);
+    let token = match twitch::get_token(&creds.client_id, &creds.client_secret).await {
+        Ok(token) => token,
+        Err(err) => {
+            eprintln!("Failed to fetch application token: {err}");
+            process::exit(1);
+        }
+    };
+    let clips = match twitch::get_clips(&broadcaster, &token).await {
+        Ok(clips) => clips,
+        Err(err) => {
+            eprintln!("Failed to fetch clips: {err}");
+            process::exit(1);
+        }
+    };
+    let mut futures = Vec::new();
+    for clip in clips {
+        futures.push(download_clip(clip));
+    }
+    join_all(futures).await;
 
 }
 
@@ -119,6 +214,9 @@ async fn main() {
     match args.command {
         Commands::Clip { output, clip } => {
             handle_clip_subcommand(output, clip).await
+        }
+        Commands::Channel { credentials, broadcaster } => {
+            handle_channel_subcommand(credentials, broadcaster).await
         }
     }
 
