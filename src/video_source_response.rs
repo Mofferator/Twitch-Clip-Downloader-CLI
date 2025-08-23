@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+// Collection of nested structs capturing the format of twitch's GraphQL response
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VideoSourceResponse {
