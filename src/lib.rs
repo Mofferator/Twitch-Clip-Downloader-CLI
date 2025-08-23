@@ -1,9 +1,12 @@
 pub mod twitch_utils;
 
-use std::{fmt::Display, path::{Path, PathBuf}, str::FromStr};
+use log::{error, debug};
+
+use std::{fmt::Display, path::{Path, PathBuf}, str::FromStr, sync::Arc};
 use anyhow::Result;
+use indicatif::{MultiProgress, ProgressBar};
 mod video_source_response;
-use futures_util::StreamExt;
+use futures_util::{future::join_all, StreamExt};
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use reqwest::Url;
 use tokio::{fs::File, io::AsyncWriteExt};
@@ -90,12 +93,26 @@ pub async fn get_video_source_files(clip_slug: &String) -> Result<Vec<SourceFile
     format_source_urls(&video_source_response)
 }
 
+pub async fn download_clips(multi: Arc<MultiProgress>, clips: Vec<Clip>, directory: &Path, chunk_size: usize, silent: bool) {
+    let bar = match silent {
+        false => Some(multi.add(ProgressBar::new(clips.len().try_into().unwrap()))),
+        true => None
+    };
+    for chunk in clips.chunks(chunk_size) {
+        let futures: Vec<_> = chunk.iter().map(|clip| download_clip(clip, directory)).collect();
+        let _ = join_all(futures).await;
+        if let Some(ref bar) = bar {
+            bar.inc(chunk.len().try_into().unwrap());
+        }
+    }
+}
+
 pub async fn download_file(url: Url, file: &PathBuf) {
     let client = reqwest::Client::new();
     let response = match client.get(url).send().await {
         Ok(resp) => resp,
         Err(e) => {
-            eprintln!("Failed to send request: {e}");
+            error!("Failed to send request: {e}");
             return;
         }
     };
@@ -105,7 +122,7 @@ pub async fn download_file(url: Url, file: &PathBuf) {
     let mut output = match File::create(&file).await {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("Failed to create file {}: {}", file.display(), e);
+            error!("Failed to create file {}: {}", file.display(), e);
             return;
         }
     };
@@ -114,32 +131,32 @@ pub async fn download_file(url: Url, file: &PathBuf) {
         match chunk {
             Ok(bytes) => {
                 if let Err(e) = output.write_all(&bytes).await {
-                    eprintln!("Failed to write to file {}: {}", file.display(), e);
+                    error!("Failed to write to file {}: {}", file.display(), e);
                     return;
                 }
             }
             Err(e) => {
-                eprintln!("Error while downloading: {e}");
+                error!("Error while downloading: {e}");
                 return;
             }
         }
     }
 
-    println!("Downloaded file to {}", file.display());
+    debug!("Downloaded file to {}", file.display());
 }
 
-pub async fn download_clip(clip: Clip, directory: &Path) {
+pub async fn download_clip(clip: &Clip, directory: &Path) {
     let source_files = match get_video_source_files(&clip.id).await {
         Ok(files) => files,
         Err(err) => {
-            eprintln!("Failed to download clip: {} ({err})", clip.id);
+            error!("Failed to download clip: {} ({err})", clip.id);
             return;
         }
     };
     let best = match source_files.iter().max() {
         Some(best) => best,
         None => {
-            eprintln!("Could not find source file for clip: {}", clip.id);
+            error!("Could not find source file for clip: {}", clip.id);
             return;
         }
     };
@@ -147,7 +164,7 @@ pub async fn download_clip(clip: Clip, directory: &Path) {
     let path = match PathBuf::from_str(&format!("{}.mp4", &clip.id)) {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("Failed to specify path: {err}");
+            error!("Failed to specify path: {err}");
             return;
         }
     };

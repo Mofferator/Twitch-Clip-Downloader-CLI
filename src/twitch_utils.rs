@@ -1,7 +1,8 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
 use twitch_api::{helix::clips::{get_clips, Clip}, twitch_oauth2::AppAccessToken, types::{TimestampRef, UserId}, HelixClient};
 use anyhow::Result;
+use indicatif::{MultiProgress, ProgressBar};
 
 pub async fn get_token(client_id: &str, client_secret: &str) -> Result<AppAccessToken> {
     let client: HelixClient<reqwest::Client> = HelixClient::default();
@@ -13,7 +14,8 @@ pub async fn get_token(client_id: &str, client_secret: &str) -> Result<AppAccess
     )
     .await?)
 }
-pub async fn get_clips(broadcaster_id: &UserId,
+pub async fn get_clips(multi: Arc<MultiProgress>,
+                        broadcaster_id: &UserId,
                         token: &AppAccessToken,
                         started_at: Option<Cow<'_, TimestampRef>>,
                         ended_at: Option<Cow<'_, TimestampRef>>,
@@ -29,6 +31,8 @@ pub async fn get_clips(broadcaster_id: &UserId,
         .first(first)
         .build();
 
+    let spinner = multi.add(ProgressBar::new_spinner());
+    spinner.set_message("Fetching clips from twitch");
     loop {
         request.after = cursor.clone();
 
@@ -40,7 +44,7 @@ pub async fn get_clips(broadcaster_id: &UserId,
         } else {
             break;
         }
-        
+        spinner.tick();
     }
     Ok(clips)
 }
