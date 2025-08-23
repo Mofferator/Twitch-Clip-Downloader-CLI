@@ -1,11 +1,13 @@
-#![allow(dead_code)]
-use std::{fmt::Display, str::FromStr};
+pub mod twitch_utils;
 
+use std::{fmt::Display, path::PathBuf, str::FromStr};
 use anyhow::Result;
 mod video_source_response;
-mod twitch;
+use futures_util::StreamExt;
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use reqwest::Url;
+use tokio::{fs::File, io::AsyncWriteExt};
+use twitch_api::helix::clips::Clip;
 use video_source_response::VideoSourceResponse;
 
 #[derive(PartialEq, Eq, Debug)]
@@ -86,4 +88,69 @@ pub async fn get_video_source_files(clip_slug: &String) -> Result<Vec<SourceFile
     let video_source_response: VideoSourceResponse = serde_json::from_str(&body)?;
 
     format_source_urls(&video_source_response)
+}
+
+pub async fn download_file(url: Url, file: &PathBuf) {
+    let client = reqwest::Client::new();
+    let response = match client.get(url).send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            eprintln!("Failed to send request: {}", e);
+            return;
+        }
+    };
+
+    let mut stream = response.bytes_stream();
+
+    let mut output = match File::create(&file).await {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Failed to create file {}: {}", file.display(), e);
+            return;
+        }
+    };
+
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(bytes) => {
+                if let Err(e) = output.write_all(&bytes).await {
+                    eprintln!("Failed to write to file {}: {}", file.display(), e);
+                    return;
+                }
+            }
+            Err(e) => {
+                eprintln!("Error while downloading: {}", e);
+                return;
+            }
+        }
+    }
+
+    println!("Downloaded file to {}", file.display());
+}
+
+pub async fn download_clip(clip: Clip, directory: &PathBuf) {
+    let source_files = match get_video_source_files(&clip.id).await {
+        Ok(files) => files,
+        Err(_) => {
+            eprintln!("Failed to download clip: {}", clip.id);
+            return;
+        }
+    };
+    let best = match source_files.iter().max() {
+        Some(best) => best,
+        None => {
+            eprintln!("Could not find source file for clip: {}", clip.id);
+            return;
+        }
+    };
+    let url = best.url.clone();
+    let path = match PathBuf::from_str(&format!("{}.mp4", &clip.id)) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("Failed to specify path: {err}");
+            return;
+        }
+    };
+    let path = directory.join(path);
+    download_file(url.clone(), &path).await;
 }

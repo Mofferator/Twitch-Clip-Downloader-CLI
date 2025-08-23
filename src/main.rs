@@ -1,14 +1,11 @@
 use clap::{arg, command, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use twdl::get_video_source_files;
-use twitch_api::{helix::clips::Clip, twitch_oauth2::AppAccessToken, types::UserId};
+use twitch_api::{twitch_oauth2::AppAccessToken, types::UserId};
 use std::{path::PathBuf, process, str::FromStr};
 use regex::Regex;
-use reqwest::Url;
-use tokio::{fs::read, io::AsyncWriteExt};
-use tokio::fs::File;
-use futures_util::{future::join_all, StreamExt};
-mod twitch;
+use tokio::fs::read;
+use futures_util::future::join_all;
 
 #[derive(Parser, Debug)]
 #[command(name = "tw-dl", version, about = "Downloads twitch clips")]
@@ -41,44 +38,6 @@ enum Commands {
     }
 }
 
-async fn download_file(url: Url, file: &PathBuf) {
-    let client = reqwest::Client::new();
-    let response = match client.get(url).send().await {
-        Ok(resp) => resp,
-        Err(e) => {
-            eprintln!("Failed to send request: {}", e);
-            return;
-        }
-    };
-
-    let mut stream = response.bytes_stream();
-
-    let mut output = match File::create(&file).await {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("Failed to create file {}: {}", file.display(), e);
-            return;
-        }
-    };
-
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(bytes) => {
-                if let Err(e) = output.write_all(&bytes).await {
-                    eprintln!("Failed to write to file {}: {}", file.display(), e);
-                    return;
-                }
-            }
-            Err(e) => {
-                eprintln!("Error while downloading: {}", e);
-                return;
-            }
-        }
-    }
-
-    println!("Downloaded file to {}", file.display());
-}
-
 #[derive(Deserialize, Serialize, Debug)]
 struct TwitchCredentials {
     client_id: String,
@@ -100,7 +59,7 @@ async fn login_or_id(id: &Option<u32>, login: &Option<String>, token: &AppAccess
         }
         (Some(id), _) => id.to_string().into(),
         (None, Some(login)) => {
-            match twitch::get_broadcaster_id(login, token).await {
+            match twdl::twitch_utils::get_broadcaster_id(login, token).await {
                 Ok(Some(id)) => id,
                 _ => {
                     eprintln!("Error finding user with that login");
@@ -150,35 +109,8 @@ async fn handle_clip_subcommand(output: Option<String>, clip: String) {
         }
     };
 
-    download_file(best.url.clone(), &path).await;
+    twdl::download_file(best.url.clone(), &path).await;
 
-}
-
-async fn download_clip(clip: Clip, directory: &PathBuf) {
-    let source_files = match get_video_source_files(&clip.id).await {
-        Ok(files) => files,
-        Err(_) => {
-            eprintln!("Failed to download clip: {}", clip.id);
-            return;
-        }
-    };
-    let best = match source_files.iter().max() {
-        Some(best) => best,
-        None => {
-            eprintln!("Could not find source file for clip: {}", clip.id);
-            return;
-        }
-    };
-    let url = best.url.clone();
-    let path = match PathBuf::from_str(&format!("{}.mp4", &clip.id)) {
-        Ok(path) => path,
-        Err(err) => {
-            eprintln!("Failed to specify path: {err}");
-            return;
-        }
-    };
-    let path = directory.join(path);
-    download_file(url.clone(), &path).await;
 }
 
 async fn handle_channel_subcommand(credentials: String, output: String,
@@ -212,7 +144,7 @@ async fn handle_channel_subcommand(credentials: String, output: String,
             process::exit(1);
         }
     };
-    let token = match twitch::get_token(&creds.client_id, &creds.client_secret).await {
+    let token = match twdl::twitch_utils::get_token(&creds.client_id, &creds.client_secret).await {
         Ok(token) => token,
         Err(err) => {
             eprintln!("Failed to fetch application token: {err}");
@@ -227,7 +159,7 @@ async fn handle_channel_subcommand(credentials: String, output: String,
             process::exit(1);
         }
     };
-    let clips = match twitch::get_clips(&id, &token).await {
+    let clips = match twdl::twitch_utils::get_clips(&id, &token).await {
         Ok(clips) => clips,
         Err(err) => {
             eprintln!("Failed to fetch clips: {err}");
@@ -236,7 +168,7 @@ async fn handle_channel_subcommand(credentials: String, output: String,
     };
     let mut futures = Vec::new();
     for clip in clips {
-        futures.push(download_clip(clip, &output_path));
+        futures.push(twdl::download_clip(clip, &output_path));
     }
     join_all(futures).await;
 
