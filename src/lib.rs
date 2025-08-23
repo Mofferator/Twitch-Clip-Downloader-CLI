@@ -1,6 +1,6 @@
 pub mod twitch_utils;
 
-use std::{fmt::Display, path::PathBuf, str::FromStr};
+use std::{fmt::Display, path::{Path, PathBuf}, str::FromStr};
 use anyhow::Result;
 mod video_source_response;
 use futures_util::StreamExt;
@@ -95,7 +95,7 @@ pub async fn download_file(url: Url, file: &PathBuf) {
     let response = match client.get(url).send().await {
         Ok(resp) => resp,
         Err(e) => {
-            eprintln!("Failed to send request: {}", e);
+            eprintln!("Failed to send request: {e}");
             return;
         }
     };
@@ -119,7 +119,7 @@ pub async fn download_file(url: Url, file: &PathBuf) {
                 }
             }
             Err(e) => {
-                eprintln!("Error while downloading: {}", e);
+                eprintln!("Error while downloading: {e}");
                 return;
             }
         }
@@ -128,11 +128,11 @@ pub async fn download_file(url: Url, file: &PathBuf) {
     println!("Downloaded file to {}", file.display());
 }
 
-pub async fn download_clip(clip: Clip, directory: &PathBuf) {
+pub async fn download_clip(clip: Clip, directory: &Path) {
     let source_files = match get_video_source_files(&clip.id).await {
         Ok(files) => files,
-        Err(_) => {
-            eprintln!("Failed to download clip: {}", clip.id);
+        Err(err) => {
+            eprintln!("Failed to download clip: {} ({err})", clip.id);
             return;
         }
     };

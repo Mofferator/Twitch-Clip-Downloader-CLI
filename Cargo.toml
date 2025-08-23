@@ -4,14 +4,16 @@ version = "0.3.0"
 edition = "2024"
 
 [profile.release]
-opt-level = "s"
+opt-level = 3
 strip = "symbols"
 lto = true
 panic = "abort"
 
 [dependencies]
 anyhow = "1.0.99"
+chrono = "0.4.41"
 clap = { version = "4.5.45", features = ["derive"] }
+dateparser = "0.2.1"
 futures-util = "0.3.31"
 percent-encoding = "2.3.2"
 regex = "1.11.1"
@@ -19,4 +21,5 @@ reqwest = { version = "0.12.23", features = ["json", "stream"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
 tokio = { version = "1.47.1", features = ["fs", "macros", "rt-multi-thread"] }
-twitch_api = { version = "0.7.2", features = ["client", "helix", "reqwest", "twitch_oauth2"] }
+twitch_api = { version = "0.7.2", features = ["client", "helix", "reqwest", "twitch_oauth2", "typed-builder"] }
+twitch_types = { version = "0.4.8", features = ["time"] }

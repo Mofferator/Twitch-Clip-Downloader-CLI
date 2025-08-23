@@ -1,8 +1,9 @@
 use clap::{arg, command, Parser, Subcommand};
+use dateparser::parse;
 use serde::{Deserialize, Serialize};
 use twdl::get_video_source_files;
-use twitch_api::{twitch_oauth2::AppAccessToken, types::UserId};
-use std::{path::PathBuf, process, str::FromStr};
+use twitch_api::{twitch_oauth2::AppAccessToken, types::{Timestamp, TimestampRef, UserId}};
+use std::{borrow::Cow, path::PathBuf, process, str::FromStr};
 use regex::Regex;
 use tokio::fs::read;
 use futures_util::future::join_all;
@@ -35,6 +36,15 @@ enum Commands {
 
         #[arg(short = 'l', long = "broadcaster-login", help = "Broadcaster login")]
         broadcaster_name: Option<String>,
+
+        #[arg(short = 's', long = "start", help = "Start of datetime range (If no end provided, defaults to 1 week)")]
+        start_timestamp: Option<String>,
+
+        #[arg(short = 'e', long = "end", help = "End of datetime range, requires a start time")]
+        end_timestamp: Option<String>,
+
+        #[arg(short = 'C', long = "chunk-size", help = "Number of clips fetched per page, default=20 max=100")]
+        limit: Option<usize>
     }
 }
 
@@ -44,9 +54,14 @@ struct TwitchCredentials {
     client_secret: String
 }
 
+fn exit_with_error_msg(msg: &str, code: Option<i32>) -> ! {
+    eprintln!("{msg}");
+    process::exit(code.unwrap_or(1));
+}
+
 fn output_file_or_cwd(output_file: &Option<String>, slug: &String) -> Result<PathBuf, std::convert::Infallible> {
     match output_file {
-        Some(path) => PathBuf::from_str(&path),
+        Some(path) => PathBuf::from_str(path),
         None => PathBuf::from_str(&format!("./{slug}.mp4"))
     }
 }
@@ -68,6 +83,33 @@ async fn login_or_id(id: &Option<u32>, login: &Option<String>, token: &AppAccess
             }
         }
     }
+}
+
+fn interpret_datetimes(start: Option<String>, end: Option<String>) 
+    -> (Option<Cow<'static, TimestampRef>>, Option<Cow<'static, TimestampRef>>) {
+        if let (None, Some(_)) = (&start, &end) {
+            eprintln!("Start datetime must be provided with end datetime");
+            process::exit(1); 
+        } else {
+            fn interpret_date(date: Option<String>) -> Option<Cow<'static, TimestampRef>> {
+                match date {
+                    Some(s) => match parse(&s) {
+                        Ok(date) => {
+                            // Convert into owned `Timestamp`
+                            let owned: Timestamp = match Timestamp::from_str(&date.to_rfc3339()) {
+                                Ok(ts) => ts,
+                                Err(err) 
+                                    => exit_with_error_msg(&format!("Failed to interpret datetime: {err}"), Some(1)),
+                            };
+                            Some(Cow::Owned(owned))
+                        }
+                        Err(err) => exit_with_error_msg(&format!("Failed to interpret datetime: {err}"), Some(1)),
+                    },
+                    None => None,
+                }
+            }
+            (interpret_date(start), interpret_date(end))
+        }
 }
 
 async fn handle_clip_subcommand(output: Option<String>, clip: String) {
@@ -114,7 +156,9 @@ async fn handle_clip_subcommand(output: Option<String>, clip: String) {
 }
 
 async fn handle_channel_subcommand(credentials: String, output: String,
-                                    broadcaster_id: Option<u32>, broadcaster_login: Option<String>) -> () {
+                                    broadcaster_id: Option<u32>, broadcaster_login: Option<String>,
+                                    start_timestamp: Option<String>, end_timestamp: Option<String>,
+                                    limit: Option<usize>) -> () {
     let path = match PathBuf::from_str(&credentials) {
         Ok(path) => path,
         Err(_) => {
@@ -152,6 +196,7 @@ async fn handle_channel_subcommand(credentials: String, output: String,
         }
     };
     let id = login_or_id(&broadcaster_id, &broadcaster_login, &token).await;
+    let (start, end) = interpret_datetimes(start_timestamp, end_timestamp);
     let output_path = match PathBuf::from_str(&output) {
         Ok(path) => path,
         Err(_) => {
@@ -159,7 +204,7 @@ async fn handle_channel_subcommand(credentials: String, output: String,
             process::exit(1);
         }
     };
-    let clips = match twdl::twitch_utils::get_clips(&id, &token).await {
+    let clips = match twdl::twitch_utils::get_clips(&id, &token, start, end, limit).await {
         Ok(clips) => clips,
         Err(err) => {
             eprintln!("Failed to fetch clips: {err}");
@@ -181,8 +226,12 @@ async fn main() {
         Commands::Clip { output, clip } => {
             handle_clip_subcommand(output, clip).await
         }
-        Commands::Channel { credentials, output, broadcaster_id, broadcaster_name } => {
-            handle_channel_subcommand(credentials, output, broadcaster_id, broadcaster_name).await
+        Commands::Channel { credentials, output, broadcaster_id, 
+            broadcaster_name, start_timestamp, end_timestamp, 
+            limit } => {
+            handle_channel_subcommand(credentials, output, broadcaster_id, 
+                broadcaster_name, start_timestamp, end_timestamp, 
+                limit).await
         }
     }
 
