@@ -1,5 +1,6 @@
 use clap::{arg, command, Parser, Subcommand, Args};
 use dateparser::parse;
+use futures_util::future::join_all;
 use indicatif::MultiProgress;
 use serde::{Deserialize, Serialize};
 use twdl::{download_clips, get_video_source_files};
@@ -55,7 +56,10 @@ struct ChannelCommandArgs {
     end_timestamp: Option<String>,
 
     #[arg(short = 'C', long = "chunk-size", help = "Number of clips fetched per page, default=20 max=100")]
-    chunk_size: Option<usize>
+    chunk_size: Option<usize>,
+
+    #[arg(short = 'L', long = "link", help = "Skip downloads and print the source file URLs")]
+    link: bool
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -224,8 +228,32 @@ async fn handle_channel_subcommand(args: ChannelCommandArgs, multi: Arc<MultiPro
         }
     };
     info!("Fetched {} clips, starting download", clips.len());
-    download_clips(multi, clips, &output_path, args.chunk_size.unwrap_or(10), false).await;
-
+    if args.link {
+        let mut source_file_futures = Vec::new();
+        for clip in &clips {
+            source_file_futures.push(get_video_source_files(&clip.id));
+        }
+        let source_file_results = join_all(source_file_futures).await;
+        for result in &source_file_results {
+            let files = match result {
+                Ok(files) => files,
+                Err(_) => {
+                    error!("Error fetching clip source url");
+                    continue;
+                }
+            };
+            let url = match files.iter().max() {
+                Some(best) => &best.url,
+                None => {
+                    error!("Could not find source files");
+                    continue;
+                }
+            };
+            println!("{}", url.as_str())
+        }
+    } else {
+        download_clips(multi, clips, &output_path, args.chunk_size.unwrap_or(10), false).await;
+    }
 }
 
 #[tokio::main]
