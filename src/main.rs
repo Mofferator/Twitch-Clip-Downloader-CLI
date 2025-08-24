@@ -202,11 +202,17 @@ async fn handle_channel_subcommand(args: ChannelCommandArgs, multi: Arc<MultiPro
         for result in &source_file_results {
             let files = match result {
                 Ok(files) => files,
-                Err(_) => exit_with_error_msg("Error fetching clip source url", Some(1))
+                Err(_) => {
+                    error!("Error fetching source URL");
+                    continue;
+                }
             };
             let url = match files.iter().max() {
                 Some(best) => &best.url,
-                None => exit_with_error_msg("Could not find source files", Some(1))
+                None => {
+                    error!("Could not find any source files for clip");
+                    continue;
+                }
             };
             println!("{}", url.as_str())
         }
