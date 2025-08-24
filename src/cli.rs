@@ -54,7 +54,7 @@ pub struct ChannelCommandArgs {
     #[arg(short = 'C', long = "chunk-size", help = "Number of clips fetched per page, default=20 max=100")]
     pub chunk_size: Option<usize>,
 
-    #[arg(short = 'L', long = "link", help = "Skip downloads and print the source file URLs")]
+    #[arg(short = 'L', long = "link", help = "Skip downloads and print the source file URLs to stdout")]
     pub link: bool,
 
     #[arg(short = 'm', long = "metadata", help = "Download json metadata alongside the clip")]

@@ -15,5 +15,5 @@ jobs:
       - run: git diff --exit-code || (git config user.name "GitHub Actions" &&
                                      git config user.email "actions@github.com" &&
                                      git add README.md &&
-                                     git commit -m "Update CLI docs" &&
+                                     git commit -m "Update CLI docs [skip ci]" &&
                                      git push)
