@@ -61,7 +61,7 @@ Downloads twitch clips
 * `-s`, `--start <START_TIMESTAMP>` — Start of datetime range (If no end provided, defaults to 1 week)
 * `-e`, `--end <END_TIMESTAMP>` — End of datetime range, requires a start time
 * `-C`, `--chunk-size <CHUNK_SIZE>` — Number of clips fetched per page, default=20 max=100
-* `-L`, `--link` — Skip downloads and print the source file URLs
+* `-L`, `--link` — Skip downloads and print the source file URLs to stdout
 * `-m`, `--metadata` — Download json metadata alongside the clip
 
 
