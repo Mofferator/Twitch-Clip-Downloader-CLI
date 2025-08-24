@@ -1,4 +1,4 @@
-use clap::{arg, command, Parser, Subcommand};
+use clap::{arg, command, Parser, Subcommand, Args};
 use dateparser::parse;
 use indicatif::MultiProgress;
 use serde::{Deserialize, Serialize};
@@ -18,35 +18,44 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Clip {
-        #[arg(short = 'o', long = "output", help = "Output file to download clip to")]
-        output: Option<String>,
+    Clip(ClipCommandArgs),
 
-        clip: String
-    },
+    Channel(ChannelCommandArgs)
+}
 
-    Channel {
-        #[arg(short = 'o', long = "output", default_value_t = String::from("."), help = "Path to directory to store the clips")]
-        output: String,
+#[derive(Args, Debug)]
+struct ClipCommandArgs {
+     #[arg(short = 'o', long = "output", help = "Output file to download clip to")]
+    output: Option<String>,
 
-        #[arg(short = 'c', long = "credentials", help = "Path to a json file containing client_id and client_secret")]
-        credentials: String,
+    #[arg(short = 'L', long = "link", help = "Skip download and print the source file URL")]
+    link: bool,
 
-        #[arg(short = 'i', long = "broadcaster-id", help = "Numeric broadcaster ID")]
-        broadcaster_id: Option<u32>,
+    clip: String
+}
 
-        #[arg(short = 'l', long = "broadcaster-login", help = "Broadcaster login")]
-        broadcaster_name: Option<String>,
+#[derive(Args, Debug)]
+struct ChannelCommandArgs {
+    #[arg(short = 'o', long = "output", default_value_t = String::from("."), help = "Path to directory to store the clips")]
+    output: String,
 
-        #[arg(short = 's', long = "start", help = "Start of datetime range (If no end provided, defaults to 1 week)")]
-        start_timestamp: Option<String>,
+    #[arg(short = 'c', long = "credentials", help = "Path to a json file containing client_id and client_secret")]
+    credentials: String,
 
-        #[arg(short = 'e', long = "end", help = "End of datetime range, requires a start time")]
-        end_timestamp: Option<String>,
+    #[arg(short = 'i', long = "broadcaster-id", help = "Numeric broadcaster ID")]
+    broadcaster_id: Option<u32>,
 
-        #[arg(short = 'C', long = "chunk-size", help = "Number of clips fetched per page, default=20 max=100")]
-        chunk_size: Option<usize>
-    }
+    #[arg(short = 'l', long = "broadcaster-login", help = "Broadcaster login")]
+    broadcaster_login: Option<String>,
+
+    #[arg(short = 's', long = "start", help = "Start of datetime range (If no end provided, defaults to 1 week)")]
+    start_timestamp: Option<String>,
+
+    #[arg(short = 'e', long = "end", help = "End of datetime range, requires a start time")]
+    end_timestamp: Option<String>,
+
+    #[arg(short = 'C', long = "chunk-size", help = "Number of clips fetched per page, default=20 max=100")]
+    chunk_size: Option<usize>
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -113,11 +122,11 @@ fn interpret_datetimes(start: Option<String>, end: Option<String>)
         }
 }
 
-async fn handle_clip_subcommand(output: Option<String>, clip: String) {
+async fn handle_clip_subcommand(args: ClipCommandArgs) {
     let re = Regex::new(r"(?:https?://(?:www\.)?twitch\.tv/[^/]+/clip/|https?://clips\.twitch\.tv/)?([A-Za-z0-9_-]+)")
         .expect("Failed to parse regex string");
 
-    let slug = if let Some(caps) = re.captures(&clip) {
+    let slug = if let Some(caps) = re.captures(&args.clip) {
         if let Some(m) = caps.get(1) {
             m.as_str().to_string()
         } else {
@@ -129,7 +138,7 @@ async fn handle_clip_subcommand(output: Option<String>, clip: String) {
         process::exit(1);
     };
 
-    let path = match output_file_or_cwd(&output, &slug) {
+    let path = match output_file_or_cwd(&args.output, &slug) {
         Ok(path) => path,
         Err(err) => {
             error!("Invalid path: {err}");
@@ -152,18 +161,20 @@ async fn handle_clip_subcommand(output: Option<String>, clip: String) {
         }
     };
 
-    twdl::download_file(best.url.clone(), &path).await;
+    if args.link {
+        println!("{}", best.url.clone().as_str());
+    } else {
+        twdl::download_file(best.url.clone(), &path).await;
+    }
+    
 
 }
 
-async fn handle_channel_subcommand(credentials: String, output: String,
-                                    broadcaster_id: Option<u32>, broadcaster_login: Option<String>,
-                                    start_timestamp: Option<String>, end_timestamp: Option<String>,
-                                    chunk_size: Option<usize>, multi: Arc<MultiProgress>) -> () {
-    let path = match PathBuf::from_str(&credentials) {
+async fn handle_channel_subcommand(args: ChannelCommandArgs, multi: Arc<MultiProgress>) -> () {
+    let path = match PathBuf::from_str(&args.credentials) {
         Ok(path) => path,
         Err(_) => {
-            error!("Invalid credentials path: {credentials}");
+            error!("Invalid credentials path: {}", args.credentials);
             process::exit(1);
         }
     };
@@ -196,9 +207,9 @@ async fn handle_channel_subcommand(credentials: String, output: String,
             process::exit(1);
         }
     };
-    let id = login_or_id(&broadcaster_id, &broadcaster_login, &token).await;
-    let (start, end) = interpret_datetimes(start_timestamp, end_timestamp);
-    let output_path = match PathBuf::from_str(&output) {
+    let id = login_or_id(&args.broadcaster_id, &args.broadcaster_login, &token).await;
+    let (start, end) = interpret_datetimes(args.start_timestamp, args.end_timestamp);
+    let output_path = match PathBuf::from_str(&args.output) {
         Ok(path) => path,
         Err(_) => {
             error!("Invalid path");
@@ -213,7 +224,7 @@ async fn handle_channel_subcommand(credentials: String, output: String,
         }
     };
     info!("Fetched {} clips, starting download", clips.len());
-    download_clips(multi, clips, &output_path, chunk_size.unwrap_or(10), false).await;
+    download_clips(multi, clips, &output_path, args.chunk_size.unwrap_or(10), false).await;
 
 }
 
@@ -236,15 +247,11 @@ async fn main() {
     }
 
     match args.command {
-        Commands::Clip { output, clip } => {
-            handle_clip_subcommand(output, clip).await
+        Commands::Clip(args) => {
+            handle_clip_subcommand(args).await
         }
-        Commands::Channel { credentials, output, broadcaster_id, 
-            broadcaster_name, start_timestamp, end_timestamp, 
-            chunk_size } => {
-            handle_channel_subcommand(credentials, output, broadcaster_id, 
-                broadcaster_name, start_timestamp, end_timestamp, 
-                chunk_size, multi).await
+        Commands::Channel(args) => {
+            handle_channel_subcommand(args, multi).await
         }
     }
 
