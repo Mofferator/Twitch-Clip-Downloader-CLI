@@ -252,7 +252,7 @@ async fn handle_channel_subcommand(args: ChannelCommandArgs, multi: Arc<MultiPro
             println!("{}", url.as_str())
         }
     } else {
-        download_clips(multi, clips, &output_path, args.chunk_size.unwrap_or(10), false).await;
+        download_clips(multi, clips, &output_path, args.chunk_size.unwrap_or(10), args.link).await;
     }
 }
 
@@ -262,6 +262,16 @@ async fn main() {
     let multi = Arc::new(MultiProgress::new());
 
     {
+        // for outputting links, limit logs to errors
+        let link = match &args.command {
+            Commands::Clip(args) => args.link,
+            Commands::Channel(args) => args.link
+        };
+        let log_level = match link {
+            true => log::LevelFilter::Error,
+            false => log::LevelFilter::Info
+        };
+
         let multi_for_logs = multi.clone();
         env_logger::Builder::new()
             .format(move |buf, record| {
@@ -270,7 +280,7 @@ async fn main() {
                 multi_for_logs.println(msg).unwrap();
                 Ok(())
             })
-            .filter_level(log::LevelFilter::Info)
+            .filter_level(log_level)
             .init();
     }
 
