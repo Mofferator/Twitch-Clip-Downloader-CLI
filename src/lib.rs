@@ -1,4 +1,5 @@
 pub mod twitch_utils;
+pub mod cli;
 
 use log::{error, debug};
 

@@ -1,4 +1,4 @@
-use clap::{arg, command, Parser, Subcommand, Args};
+use clap::Parser;
 use dateparser::parse;
 use futures_util::future::join_all;
 use indicatif::MultiProgress;
@@ -10,66 +10,7 @@ use regex::Regex;
 use tokio::fs::read;
 use log::{error, info};
 
-#[derive(Parser, Debug)]
-#[command(name = "tw-dl", version, about = "Downloads twitch clips")]
-struct Cli {
-    #[clap(subcommand)]
-    command: Commands,
-}
-
-#[derive(Subcommand, Debug)]
-enum Commands {
-    Clip(ClipCommandArgs),
-
-    Channel(ChannelCommandArgs)
-}
-
-#[derive(Args, Debug)]
-struct ClipCommandArgs {
-     #[arg(short = 'o', long = "output", default_value_t = String::from("."), help = "Output dir to download clip to")]
-    output: String,
-
-    #[arg(short = 'L', long = "link", help = "Skip download and print the source file URL")]
-    link: bool,
-
-    #[arg(short = 'm', long = "metadata", help = "Download json metadata alongside the clip")]
-    metadata: bool,
-
-    #[arg(short = 'c', long = "credentials", help = "Path to a json file containing client_id and client_secret")]
-    credentials: Option<String>,
-
-    clip: String
-}
-
-#[derive(Args, Debug)]
-struct ChannelCommandArgs {
-    #[arg(short = 'o', long = "output", default_value_t = String::from("."), help = "Path to directory to store the clips")]
-    output: String,
-
-    #[arg(short = 'c', long = "credentials", help = "Path to a json file containing client_id and client_secret")]
-    credentials: String,
-
-    #[arg(short = 'i', long = "broadcaster-id", help = "Numeric broadcaster ID")]
-    broadcaster_id: Option<u32>,
-
-    #[arg(short = 'l', long = "broadcaster-login", help = "Broadcaster login")]
-    broadcaster_login: Option<String>,
-
-    #[arg(short = 's', long = "start", help = "Start of datetime range (If no end provided, defaults to 1 week)")]
-    start_timestamp: Option<String>,
-
-    #[arg(short = 'e', long = "end", help = "End of datetime range, requires a start time")]
-    end_timestamp: Option<String>,
-
-    #[arg(short = 'C', long = "chunk-size", help = "Number of clips fetched per page, default=20 max=100")]
-    chunk_size: Option<usize>,
-
-    #[arg(short = 'L', long = "link", help = "Skip downloads and print the source file URLs")]
-    link: bool,
-
-    #[arg(short = 'm', long = "metadata", help = "Download json metadata alongside the clip")]
-    metadata: bool
-}
+use twdl::cli::{Cli, ClipCommandArgs, ChannelCommandArgs, Commands};
 
 #[derive(Deserialize, Serialize, Debug)]
 struct TwitchCredentials {

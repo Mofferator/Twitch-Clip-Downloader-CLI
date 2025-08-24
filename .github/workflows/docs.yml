@@ -1,0 +1,19 @@
+name: Update CLI docs
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  cli-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo run --bin gen-docs
+      - run: git diff --exit-code || (git config user.name "GitHub Actions" &&
+                                     git config user.email "actions@github.com" &&
+                                     git add README.md &&
+                                     git commit -m "Update CLI docs" &&
+                                     git push)

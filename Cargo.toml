@@ -9,11 +9,13 @@ strip = "symbols"
 lto = true
 panic = "abort"
 
+
 [dependencies]
 anyhow = "1.0.99"
 chrono = "0.4.41"
 chunks = "0.1.1"
 clap = { version = "4.5.45", features = ["derive"] }
+clap-markdown = "0.1.5"
 dateparser = "0.2.1"
 env_logger = "0.11.8"
 futures-util = "0.3.31"
