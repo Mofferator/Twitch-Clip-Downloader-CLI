@@ -56,3 +56,13 @@ pub async fn get_broadcaster_id(login: &String, token: &AppAccessToken) -> Resul
     Ok(user_option.map(|user| user.id))
 }
 
+pub async fn get_clip<'a>(clip_id: &String, token: &AppAccessToken) -> Result<Option<Clip>> {
+    let client: HelixClient<reqwest::Client> = HelixClient::default();
+    let get_clip_request = get_clips::GetClipsRequest::builder()
+        .id(vec![clip_id].into())
+        .build();
+    let response = client.req_get(get_clip_request, token).await?;
+    let clip = response.data.first();
+    Ok(clip.cloned())
+}
+

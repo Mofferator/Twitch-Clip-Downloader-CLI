@@ -9,7 +9,7 @@ mod video_source_response;
 use futures_util::{future::join_all, StreamExt};
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
 use reqwest::Url;
-use tokio::{fs::File, io::AsyncWriteExt};
+use tokio::{fs::{self, File}, io::AsyncWriteExt};
 use twitch_api::helix::clips::Clip;
 use video_source_response::VideoSourceResponse;
 
@@ -93,12 +93,16 @@ pub async fn get_video_source_files(clip_slug: &String) -> Result<Vec<SourceFile
     format_source_urls(&video_source_response)
 }
 
-pub async fn download_clips(multi: Arc<MultiProgress>, clips: Vec<Clip>, directory: &Path, chunk_size: usize, silent: bool) {
+pub async fn download_clips(multi: Arc<MultiProgress>, clips: Vec<Clip>, directory: &Path, chunk_size: usize, silent: bool, meta: bool) {
     let bar = match silent {
         false => Some(multi.add(ProgressBar::new(clips.len().try_into().unwrap()))),
         true => None
     };
     for chunk in clips.chunks(chunk_size) {
+        if meta {
+            let futures: Vec<_> = chunk.iter().map(|clip| save_metadata(clip, directory)).collect();
+            let _ = join_all(futures).await;
+        }
         let futures: Vec<_> = chunk.iter().map(|clip| download_clip(clip, directory)).collect();
         let _ = join_all(futures).await;
         if let Some(ref bar) = bar {
@@ -143,6 +147,25 @@ pub async fn download_file(url: Url, file: &PathBuf) {
     }
 
     debug!("Downloaded file to {}", file.display());
+}
+
+pub async fn save_metadata(clip: &Clip, directory: &Path) {
+    let clip_json = match serde_json::to_string(&clip) {
+        Ok(json) => json,
+        Err(_) => {
+            error!("Filed to serialize metadata for clip {}", &clip.id);
+            return;
+        }
+    };
+    let output_path = directory
+        .join(PathBuf::from_str(&format!("{}_metadata.json", &clip.id)).unwrap());
+    match fs::write(output_path, clip_json).await {
+        Ok(_) => {}
+        Err(err) => {
+            error!("Failed to write metadata file: {err}");
+        }
+    }
+
 }
 
 pub async fn download_clip(clip: &Clip, directory: &Path) {

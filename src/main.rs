@@ -26,11 +26,17 @@ enum Commands {
 
 #[derive(Args, Debug)]
 struct ClipCommandArgs {
-     #[arg(short = 'o', long = "output", help = "Output file to download clip to")]
-    output: Option<String>,
+     #[arg(short = 'o', long = "output", default_value_t = String::from("."), help = "Output dir to download clip to")]
+    output: String,
 
     #[arg(short = 'L', long = "link", help = "Skip download and print the source file URL")]
     link: bool,
+
+    #[arg(short = 'm', long = "metadata", help = "Download json metadata alongside the clip")]
+    metadata: bool,
+
+    #[arg(short = 'c', long = "credentials", help = "Path to a json file containing client_id and client_secret")]
+    credentials: Option<String>,
 
     clip: String
 }
@@ -59,7 +65,10 @@ struct ChannelCommandArgs {
     chunk_size: Option<usize>,
 
     #[arg(short = 'L', long = "link", help = "Skip downloads and print the source file URLs")]
-    link: bool
+    link: bool,
+
+    #[arg(short = 'm', long = "metadata", help = "Download json metadata alongside the clip")]
+    metadata: bool
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -71,13 +80,6 @@ struct TwitchCredentials {
 fn exit_with_error_msg(msg: &str, code: Option<i32>) -> ! {
     error!("{msg}");
     process::exit(code.unwrap_or(1));
-}
-
-fn output_file_or_cwd(output_file: &Option<String>, slug: &String) -> Result<PathBuf, std::convert::Infallible> {
-    match output_file {
-        Some(path) => PathBuf::from_str(path),
-        None => PathBuf::from_str(&format!("./{slug}.mp4"))
-    }
 }
 
 async fn login_or_id(id: &Option<u32>, login: &Option<String>, token: &AppAccessToken) -> UserId {
@@ -123,47 +125,10 @@ fn interpret_datetimes(start: Option<String>, end: Option<String>)
         }
 }
 
-async fn handle_clip_subcommand(args: ClipCommandArgs) {
-    let re = Regex::new(r"(?:https?://(?:www\.)?twitch\.tv/[^/]+/clip/|https?://clips\.twitch\.tv/)?([A-Za-z0-9_-]+)")
-        .expect("Failed to parse regex string");
-
-    let slug = if let Some(caps) = re.captures(&args.clip) {
-        if let Some(m) = caps.get(1) {
-            m.as_str().to_string()
-        } else {
-            exit_with_error_msg("No clip slug found in URL", Some(1))
-        }
-    } else {
-        exit_with_error_msg("Invalid Clip URL format", Some(1))
-    };
-
-    let path = match output_file_or_cwd(&args.output, &slug) {
+async fn load_credentials(creds: String) -> TwitchCredentials {
+    let path = match PathBuf::from_str(&creds) {
         Ok(path) => path,
-        Err(err) => exit_with_error_msg(&format!("Invalid path: {err}"), Some(1))
-    };
-    let files = match get_video_source_files(&slug).await {
-        Ok(files) => files,
-        Err(_) => exit_with_error_msg(&format!("Failed to get clips for slug {slug}"), Some(1))
-    };
-
-    let best = match files.iter().max() {
-        Some(best) => best,
-        None => exit_with_error_msg("No Source files found", Some(1))
-    };
-
-    if args.link {
-        println!("{}", best.url.clone().as_str());
-    } else {
-        twdl::download_file(best.url.clone(), &path).await;
-    }
-    
-
-}
-
-async fn handle_channel_subcommand(args: ChannelCommandArgs, multi: Arc<MultiProgress>) -> () {
-    let path = match PathBuf::from_str(&args.credentials) {
-        Ok(path) => path,
-        Err(_) => exit_with_error_msg(&format!("Invalid credentials path: {}", args.credentials), Some(1))
+        Err(_) => exit_with_error_msg(&format!("Invalid credentials path: {}", creds), Some(1))
     };
     let contents = match read(path).await {
         Ok(contents) => {
@@ -178,6 +143,66 @@ async fn handle_channel_subcommand(args: ChannelCommandArgs, multi: Arc<MultiPro
         Ok(creds) => creds,
         Err(err) => exit_with_error_msg(&format!("json file has invalid formatting: {err}"), Some(1))
     };
+    creds
+}
+
+async fn handle_clip_subcommand(args: ClipCommandArgs) {
+    let re = Regex::new(r"(?:https?://(?:www\.)?twitch\.tv/[^/]+/clip/|https?://clips\.twitch\.tv/)?([A-Za-z0-9_-]+)")
+        .expect("Failed to parse regex string");
+
+    let path = match PathBuf::from_str(&args.output) {
+        Ok(path) => path,
+        Err(_) => exit_with_error_msg("Invalid output path", Some(1))
+    };
+
+    let slug = if let Some(caps) = re.captures(&args.clip) {
+        if let Some(m) = caps.get(1) {
+            m.as_str().to_string()
+        } else {
+            exit_with_error_msg("No clip slug found in URL", Some(1))
+        }
+    } else {
+        exit_with_error_msg("Invalid Clip URL format", Some(1))
+    };
+
+    let files = match get_video_source_files(&slug).await {
+        Ok(files) => files,
+        Err(_) => exit_with_error_msg(&format!("Failed to get clips for slug {slug}"), Some(1))
+    };
+
+    let best = match files.iter().max() {
+        Some(best) => best,
+        None => exit_with_error_msg("No Source files found", Some(1))
+    };
+
+    if args.link {
+        println!("{}", best.url.clone().as_str());
+    } else {
+        if args.metadata {
+            let creds = match args.credentials {
+                Some(creds) => load_credentials(creds).await,
+                None => exit_with_error_msg("metadata requires twitch credentials to be provided", Some(1))
+            };
+            let token = match twdl::twitch_utils::get_token(&creds.client_id, &creds.client_secret).await {
+                Ok(token) => token,
+                Err(_) => {
+                    exit_with_error_msg("Failed to fetch token from twitch", Some(1));
+                }
+            };
+            let clip = twdl::twitch_utils::get_clip(&slug, &token).await;
+            if let Ok(Some(clip)) = clip {
+                twdl::save_metadata(&clip, &path).await;
+            }
+        }
+        let clip_path = &path.join(PathBuf::from_str(&format!("{}.mp4", &slug)).unwrap());
+        twdl::download_file(best.url.clone(), &clip_path).await;
+    }
+    
+
+}
+
+async fn handle_channel_subcommand(args: ChannelCommandArgs, multi: Arc<MultiProgress>) -> () {
+    let creds = load_credentials(args.credentials).await;
     let token = match twdl::twitch_utils::get_token(&creds.client_id, &creds.client_secret).await {
         Ok(token) => token,
         Err(err) => exit_with_error_msg(&format!("Failed to fetch application token: {err}"), Some(1))
@@ -217,7 +242,13 @@ async fn handle_channel_subcommand(args: ChannelCommandArgs, multi: Arc<MultiPro
             println!("{}", url.as_str())
         }
     } else {
-        download_clips(multi, clips, &output_path, args.chunk_size.unwrap_or(10), args.link).await;
+        download_clips(multi, 
+            clips, 
+            &output_path, 
+            args.chunk_size.unwrap_or(10), 
+            args.link,
+            args.metadata
+        ).await;
     }
 }
 
