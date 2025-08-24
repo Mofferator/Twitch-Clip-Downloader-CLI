@@ -90,10 +90,7 @@ async fn login_or_id(id: &Option<u32>, login: &Option<String>, token: &AppAccess
         (None, Some(login)) => {
             match twdl::twitch_utils::get_broadcaster_id(login, token).await {
                 Ok(Some(id)) => id,
-                _ => {
-                    error!("Error finding user with that login");
-                    process::exit(1);
-                }
+                _ => exit_with_error_msg("Error finding user with that login", Some(1))
             }
         }
     }
@@ -134,35 +131,24 @@ async fn handle_clip_subcommand(args: ClipCommandArgs) {
         if let Some(m) = caps.get(1) {
             m.as_str().to_string()
         } else {
-            error!("No clip slug found in URL");
-            process::exit(1);
+            exit_with_error_msg("No clip slug found in URL", Some(1))
         }
     } else {
-        error!("Invalid Clip URL format");
-        process::exit(1);
+        exit_with_error_msg("Invalid Clip URL format", Some(1))
     };
 
     let path = match output_file_or_cwd(&args.output, &slug) {
         Ok(path) => path,
-        Err(err) => {
-            error!("Invalid path: {err}");
-            return;
-        }
+        Err(err) => exit_with_error_msg(&format!("Invalid path: {err}"), Some(1))
     };
     let files = match get_video_source_files(&slug).await {
         Ok(files) => files,
-        Err(_) => {
-            error!("Failed to get clips for slug {slug}");
-            return;
-        }
+        Err(_) => exit_with_error_msg(&format!("Failed to get clips for slug {slug}"), Some(1))
     };
 
     let best = match files.iter().max() {
         Some(best) => best,
-        None => {
-            error!("No Source files found");
-            return;
-        }
+        None => exit_with_error_msg("No Source files found", Some(1))
     };
 
     if args.link {
@@ -177,55 +163,34 @@ async fn handle_clip_subcommand(args: ClipCommandArgs) {
 async fn handle_channel_subcommand(args: ChannelCommandArgs, multi: Arc<MultiProgress>) -> () {
     let path = match PathBuf::from_str(&args.credentials) {
         Ok(path) => path,
-        Err(_) => {
-            error!("Invalid credentials path: {}", args.credentials);
-            process::exit(1);
-        }
+        Err(_) => exit_with_error_msg(&format!("Invalid credentials path: {}", args.credentials), Some(1))
     };
     let contents = match read(path).await {
         Ok(contents) => {
             match String::from_utf8(contents) {
                 Ok(str) => str,
-                Err(_) => {
-                    error!("Failed to interpret creds file as text");
-                    process::exit(1);
-                }
+                Err(_) => exit_with_error_msg("Failed to interpret creds file as text", Some(1))
             }
         }
-        Err(_) => {
-            error!("Failed to read from credentials file");
-            process::exit(1);
-        }
+        Err(_) => exit_with_error_msg("Failed to read from credentials file", Some(1))
     };
     let creds: TwitchCredentials = match serde_json::from_str(&contents) {
         Ok(creds) => creds,
-        Err(err) => {
-            error!("json file has invalid formatting: {err}");
-            process::exit(1);
-        }
+        Err(err) => exit_with_error_msg(&format!("json file has invalid formatting: {err}"), Some(1))
     };
     let token = match twdl::twitch_utils::get_token(&creds.client_id, &creds.client_secret).await {
         Ok(token) => token,
-        Err(err) => {
-            error!("Failed to fetch application token: {err}");
-            process::exit(1);
-        }
+        Err(err) => exit_with_error_msg(&format!("Failed to fetch application token: {err}"), Some(1))
     };
     let id = login_or_id(&args.broadcaster_id, &args.broadcaster_login, &token).await;
     let (start, end) = interpret_datetimes(args.start_timestamp, args.end_timestamp);
     let output_path = match PathBuf::from_str(&args.output) {
         Ok(path) => path,
-        Err(_) => {
-            error!("Invalid path");
-            process::exit(1);
-        }
+        Err(_) => exit_with_error_msg("Invalid path", Some(1))
     };
     let clips = match twdl::twitch_utils::get_clips(multi.clone(), &id, &token, start, end, Some(100)).await {
         Ok(clips) => clips,
-        Err(err) => {
-            error!("Failed to fetch clips: {err}");
-            process::exit(1);
-        }
+        Err(err) => exit_with_error_msg(&format!("Failed to fetch clips: {err}"), Some(1))
     };
     info!("Fetched {} clips, starting download", clips.len());
     if args.link {
@@ -237,17 +202,11 @@ async fn handle_channel_subcommand(args: ChannelCommandArgs, multi: Arc<MultiPro
         for result in &source_file_results {
             let files = match result {
                 Ok(files) => files,
-                Err(_) => {
-                    error!("Error fetching clip source url");
-                    continue;
-                }
+                Err(_) => exit_with_error_msg("Error fetching clip source url", Some(1))
             };
             let url = match files.iter().max() {
                 Some(best) => &best.url,
-                None => {
-                    error!("Could not find source files");
-                    continue;
-                }
+                None => exit_with_error_msg("Could not find source files", Some(1))
             };
             println!("{}", url.as_str())
         }
