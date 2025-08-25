@@ -7,6 +7,8 @@ on:
 
 jobs:
   cli-docs:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
