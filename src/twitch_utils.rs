@@ -1,6 +1,7 @@
-use std::str::FromStr;
+use std::{str::FromStr};
 
 use chrono::{DateTime, Duration, Utc};
+use futures_util::future::join_all;
 use twitch_api::{helix::{clips::{get_clips, Clip}, users::{GetUsersRequest, User}}, twitch_oauth2::AppAccessToken, types::UserId, HelixClient};
 use anyhow::Result;
 use twitch_types::Timestamp;
@@ -57,18 +58,20 @@ pub async fn get_clips_chunked(broadcaster_id: &UserId,
                         end: DateTime<Utc>,
                         chunking_type: DateChunkingType,
                         first: Option<usize>) -> Vec<Clip> {
-    let futures: Vec<_> = split_date_range(start, end, chunking_type)
+    let date_ranges = split_date_range(start, end, chunking_type);
+    let futures = date_ranges
         .iter()
-        .map(|chunk| get_clips(broadcaster_id, token, chunk.0.clone(), chunk.1.clone(), first))
-        .collect();
+        .map(|chunk| get_clips(broadcaster_id, token, chunk.0.clone(), chunk.1.clone(), first));
 
     let mut clips = Vec::new();
 
-    for future in futures {
-        match future.await {
+    let results = join_all(futures).await;
+
+    for result in results {
+        match result {
             Ok(clip_sublist) => clips.extend(clip_sublist),
-            Err(_) => {
-                error!("Failed collecting clips from daterange");
+            Err(err) => {
+                error!("Failed to get clips for sublist {err}")
             }
         }
     }
