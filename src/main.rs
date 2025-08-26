@@ -1,11 +1,12 @@
+use chrono::{DateTime, TimeDelta, Utc};
 use clap::Parser;
 use dateparser::parse;
 use futures_util::future::join_all;
 use indicatif::MultiProgress;
 use serde::{Deserialize, Serialize};
 use twdl::{download_clips, get_video_source_files};
-use twitch_api::{twitch_oauth2::AppAccessToken, types::{Timestamp, TimestampRef, UserId}};
-use std::{borrow::Cow, path::PathBuf, process, str::FromStr, sync::Arc};
+use twitch_api::{twitch_oauth2::AppAccessToken, types::UserId};
+use std::{path::PathBuf, process, str::FromStr, sync::Arc};
 use regex::Regex;
 use tokio::fs::read;
 use log::{error, info};
@@ -39,32 +40,17 @@ async fn login_or_id(id: &Option<u32>, login: &Option<String>, token: &AppAccess
     }
 }
 
-fn interpret_datetimes(start: Option<String>, end: Option<String>) 
-    -> (Option<Cow<'static, TimestampRef>>, Option<Cow<'static, TimestampRef>>) {
-        if let (None, Some(_)) = (&start, &end) {
-            error!("Start datetime must be provided with end datetime");
-            process::exit(1); 
-        } else {
-            fn interpret_date(date: Option<String>) -> Option<Cow<'static, TimestampRef>> {
-                match date {
-                    Some(s) => match parse(&s) {
-                        Ok(date) => {
-                            // Convert into owned `Timestamp`
-                            let owned: Timestamp = match Timestamp::from_str(&date.to_rfc3339()) {
-                                Ok(ts) => ts,
-                                Err(err) 
-                                    => exit_with_error_msg(&format!("Failed to interpret datetime: {err}"), Some(1)),
-                            };
-                            Some(Cow::Owned(owned))
-                        }
-                        Err(err) => exit_with_error_msg(&format!("Failed to interpret datetime: {err}"), Some(1)),
-                    },
-                    None => None,
-                }
-            }
-            (interpret_date(start), interpret_date(end))
+
+fn interpret_date(date: String) -> DateTime<Utc> {
+    match parse(&date) {
+        Ok(date) => {
+            // Convert into owned `Timestamp`
+            date
         }
+        Err(err) => exit_with_error_msg(&format!("Failed to interpret datetime: {err}"), Some(1)),
+    }
 }
+
 
 async fn load_credentials(creds: String) -> TwitchCredentials {
     let path = match PathBuf::from_str(&creds) {
@@ -149,15 +135,27 @@ async fn handle_channel_subcommand(args: ChannelCommandArgs, multi: Arc<MultiPro
         Err(err) => exit_with_error_msg(&format!("Failed to fetch application token: {err}"), Some(1))
     };
     let id = login_or_id(&args.broadcaster_id, &args.broadcaster_login, &token).await;
-    let (start, end) = interpret_datetimes(args.start_timestamp, args.end_timestamp);
+    let user = match twdl::twitch_utils::get_user(&id, &token).await {
+        Ok(Some(user)) => user,
+        _ => exit_with_error_msg("Failed to get user info", Some(1))
+    };
+
+    // Use user defined dates or default to range between broadcaster signup date and now
+    let start = match args.start_timestamp {
+        Some(str) => interpret_date(str),
+        None => twdl::twitch_utils::convert_ts(&user.created_at),
+    };
+    let end = match args.end_timestamp {
+        Some(str) => interpret_date(str),
+        None => Utc::now()
+    };
+
     let output_path = match PathBuf::from_str(&args.output) {
         Ok(path) => path,
         Err(_) => exit_with_error_msg("Invalid path", Some(1))
     };
-    let clips = match twdl::twitch_utils::get_clips(multi.clone(), &id, &token, start, end, Some(100)).await {
-        Ok(clips) => clips,
-        Err(err) => exit_with_error_msg(&format!("Failed to fetch clips: {err}"), Some(1))
-    };
+    let chunking_type = twdl::twitch_utils::DateChunkingType::ByDuration(TimeDelta::weeks(4));
+    let clips = twdl::twitch_utils::get_clips_chunked(&id, &token, start, end, chunking_type, Some(100)).await;
     info!("Fetched {} clips, starting download", clips.len());
     if args.link {
         let mut source_file_futures = Vec::new();

@@ -1,8 +1,44 @@
-use std::{borrow::Cow, sync::Arc};
+use std::str::FromStr;
 
-use twitch_api::{helix::clips::{get_clips, Clip}, twitch_oauth2::AppAccessToken, types::{TimestampRef, UserId}, HelixClient};
+use chrono::{DateTime, Duration, Utc};
+use twitch_api::{helix::{clips::{get_clips, Clip}, users::{GetUsersRequest, User}}, twitch_oauth2::AppAccessToken, types::UserId, HelixClient};
 use anyhow::Result;
-use indicatif::{MultiProgress, ProgressBar};
+use twitch_types::Timestamp;
+use log::error;
+
+pub fn convert_dt(input: &DateTime<Utc>) -> Timestamp {
+    match Timestamp::from_str(&input.to_rfc3339()) {
+        Ok(date) => date,
+        Err(_) => panic!(),
+    }
+}
+
+pub fn convert_ts(input: &Timestamp) -> DateTime<Utc> {
+    input.as_str().parse::<DateTime<Utc>>().expect("Invalid timestamp format")
+}
+
+pub enum DateChunkingType {
+    ByDuration(Duration),
+    ByNumber(u16)
+}
+
+fn split_date_range(start: DateTime<Utc>, end: DateTime<Utc>, chunking_type: DateChunkingType) -> Vec<(Timestamp, Timestamp)> {
+    let step = match chunking_type {
+        DateChunkingType::ByDuration(step) => step,
+        DateChunkingType::ByNumber(num) => (end - start) / num.into()
+    };
+
+    let mut chunks = Vec::new();
+
+    let mut current = start;
+    while current < end {
+        let next = (current + step).min(end);
+        chunks.push((convert_dt(&current), convert_dt(&next)));
+        current = next;
+    }
+
+    chunks
+}
 
 pub async fn get_token(client_id: &str, client_secret: &str) -> Result<AppAccessToken> {
     let client: HelixClient<reqwest::Client> = HelixClient::default();
@@ -14,25 +50,49 @@ pub async fn get_token(client_id: &str, client_secret: &str) -> Result<AppAccess
     )
     .await?)
 }
-pub async fn get_clips(multi: Arc<MultiProgress>,
-                        broadcaster_id: &UserId,
+
+pub async fn get_clips_chunked(broadcaster_id: &UserId,
                         token: &AppAccessToken,
-                        started_at: Option<Cow<'_, TimestampRef>>,
-                        ended_at: Option<Cow<'_, TimestampRef>>,
-                        first: Option<usize>) -> Result<Vec<Clip>> {
+                        start: DateTime<Utc>,
+                        end: DateTime<Utc>,
+                        chunking_type: DateChunkingType,
+                        first: Option<usize>) -> Vec<Clip> {
+    let futures: Vec<_> = split_date_range(start, end, chunking_type)
+        .iter()
+        .map(|chunk| get_clips(broadcaster_id, token, chunk.0.clone(), chunk.1.clone(), first))
+        .collect();
+
+    let mut clips = Vec::new();
+
+    for future in futures {
+        match future.await {
+            Ok(clip_sublist) => clips.extend(clip_sublist),
+            Err(_) => {
+                error!("Failed collecting clips from daterange");
+            }
+        }
+    }
+
+    clips
+}
+
+async fn get_clips(broadcaster_id: &UserId,
+                    token: &AppAccessToken,
+                    started_at: Timestamp,
+                    ended_at: Timestamp,
+                    first: Option<usize>) -> Result<Vec<Clip>> {
     let client: HelixClient<reqwest::Client> = HelixClient::default();
     let mut clips = Vec::new();
     let mut cursor = None;
 
     let mut request = get_clips::GetClipsRequest::builder()
         .broadcaster_id(broadcaster_id.as_cow())
-        .started_at(started_at)
-        .ended_at(ended_at)
+        .started_at(Some(started_at.as_cow()))
+        .ended_at(Some(ended_at.as_cow()))
         .first(first)
         .build();
 
-    let spinner = multi.add(ProgressBar::new_spinner());
-    spinner.set_message("Fetching clips from twitch");
+
     loop {
         request.after = cursor.clone();
 
@@ -44,7 +104,6 @@ pub async fn get_clips(multi: Arc<MultiProgress>,
         } else {
             break;
         }
-        spinner.tick();
     }
     Ok(clips)
 }
@@ -56,7 +115,7 @@ pub async fn get_broadcaster_id(login: &String, token: &AppAccessToken) -> Resul
     Ok(user_option.map(|user| user.id))
 }
 
-pub async fn get_clip<'a>(clip_id: &String, token: &AppAccessToken) -> Result<Option<Clip>> {
+pub async fn get_clip(clip_id: &String, token: &AppAccessToken) -> Result<Option<Clip>> {
     let client: HelixClient<reqwest::Client> = HelixClient::default();
     let get_clip_request = get_clips::GetClipsRequest::builder()
         .id(vec![clip_id].into())
@@ -64,5 +123,15 @@ pub async fn get_clip<'a>(clip_id: &String, token: &AppAccessToken) -> Result<Op
     let response = client.req_get(get_clip_request, token).await?;
     let clip = response.data.first();
     Ok(clip.cloned())
+}
+
+pub async fn get_user(user_id: &UserId, token: &AppAccessToken) -> Result<Option<User>> {
+    let client: HelixClient<reqwest::Client> = HelixClient::default();
+    let request = GetUsersRequest::builder()
+        .id(user_id)
+        .build();
+
+    let response = client.req_get(request, token).await?;
+    Ok(response.data.first().cloned())
 }
 
